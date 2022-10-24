@@ -1,0 +1,20 @@
+FROM postgres:{{ .Version }}
+
+MAINTAINER {{ .Maintainer }}
+
+# Set locales to de_DE.UTF-8
+RUN localedef -i de_DE -c -f UTF-8 -A /usr/share/locale/locale.alias de_DE.UTF-8
+ENV LANG de_DE.UTF8
+
+# Deactivate interactive frontend; stabilizes behavior
+ENV DEBIAN_FRONTEND=noninteractive
+
+{{ if .InstallTools }}
+    # Install some convenience tools and delete cached files afterwards to minimize image size
+    RUN apt-get update && apt-get install -y --no-install-recommends \
+    {{ .Tools }}
+    RUN rm -rf /var/lib/apt/lists/*
+{{ end }}
+
+# Run postgres
+CMD ["postgres"]
