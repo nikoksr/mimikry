@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/Masterminds/semver v1.5.0
 	github.com/cockroachdb/errors v1.9.0
-	github.com/docker/docker v20.10.20+incompatible
+	github.com/docker/docker v20.10.24+incompatible
 	github.com/joho/godotenv v1.4.0
 	github.com/nikoksr/simplog v0.7.0
 	github.com/spf13/pflag v1.0.5
