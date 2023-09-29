@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"path/filepath"
 
 	"github.com/Masterminds/semver"
-	"github.com/cockroachdb/errors"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nikoksr/simplog"
 	"github.com/spf13/pflag"
@@ -37,11 +37,11 @@ type (
 		KeepBuildDirs bool
 	}
 
-	buildContext struct {
-		Version  *semver.Version
-		IsLatest bool
-		Client   *docker.Client
-		Options  *options
+	buildConfig struct {
+		Version     *semver.Version
+		IsLastImage bool
+		Client      *docker.Client
+		Options     *options
 	}
 
 	versionsList []*semver.Version
@@ -90,7 +90,7 @@ func setup(templatePath string) error {
 	var err error
 	templateDockerfile, err = template.ParseFiles(templatePath)
 	if err != nil {
-		return errors.Wrap(err, "load template")
+		return fmt.Errorf("parse template: %w", err)
 	}
 
 	return nil
@@ -160,14 +160,14 @@ func getTagBuildDir(baseDir, version string) string {
 func createVersionDirectory(path string, version *semver.Version, opts *options) error {
 	// Create directory for version if it doesn't exist
 	if err := os.MkdirAll(path, 0o750); err != nil {
-		return errors.Wrap(err, "create tag directory")
+		return fmt.Errorf("create build directory: %w", err)
 	}
 
 	// Open Dockerfile for version
 	dockerfilePath := filepath.Join(path, "Dockerfile")
 	dockerfile, err := os.Create(dockerfilePath)
 	if err != nil {
-		return errors.Wrap(err, "create Dockerfile")
+		return fmt.Errorf("create Dockerfile: %w", err)
 	}
 
 	// TODO: Remove specific use-case
@@ -182,7 +182,7 @@ func createVersionDirectory(path string, version *semver.Version, opts *options)
 	}
 
 	if err = templateDockerfile.Execute(dockerfile, data); err != nil {
-		return errors.Wrap(err, "execute template")
+		return fmt.Errorf("execute template: %w", err)
 	}
 
 	return nil
@@ -217,7 +217,7 @@ func main() {
 
 	// Setup
 	if err = setup(opts.TemplatePath); err != nil {
-		logger.Error(errors.Wrap(err, "setup"))
+		logger.Error(fmt.Errorf("setup: %w", err))
 		os.Exit(1)
 	}
 
@@ -228,50 +228,50 @@ func main() {
 	}
 }
 
-func buildImage(ctx context.Context, buildCtx *buildContext) error {
+func buildImage(ctx context.Context, conf *buildConfig) error {
 	logger := simplog.FromContext(ctx)
-	logger.Debugf("Building version %s", buildCtx.Version.Original())
+	logger.Debugf("Building version %s", conf.Version.Original())
 
 	// Get full tag for image
 	var tags []string
-	image := docker.FullTag(buildCtx.Options.TargetRepo, buildCtx.Version.Original())
+	image := docker.FullTag(conf.Options.TargetRepo, conf.Version.Original())
 	tags = append(tags, image)
 
 	// Build image
-	dockerfilePath := filepath.Join(defaultBuildDirectory, buildCtx.Version.Original(), "Dockerfile")
 	logger.Infof("Building image %s", image)
 
-	imageID, err := buildCtx.Client.Image.Build(ctx, dockerfilePath, buildCtx.Options.TargetRepo)
+	buildDirectory := filepath.Join(defaultBuildDirectory, conf.Version.Original())
+	imageID, err := conf.Client.Images().Build(ctx, buildDirectory, conf.Options.TargetRepo)
 	if err != nil {
-		return errors.Wrap(err, "build image")
+		return fmt.Errorf("build image: %w", err)
 	}
 
 	// In case of the last image, also tag it as latest; this expects the version list to be sorted the oldest first
-	if buildCtx.IsLatest {
+	if conf.IsLastImage {
 		logger.Infof("Tagging image %s as latest", image)
-		latestTag := docker.FullTag(buildCtx.Options.TargetRepo, "latest")
+		latestTag := docker.FullTag(conf.Options.TargetRepo, "latest")
 		tags = append(tags, latestTag)
 	}
 
 	// Tag image
 	logger.Infof("Tagging image %s", image)
-	if err = buildCtx.Client.Image.Tag(ctx, imageID, tags...); err != nil {
-		return errors.Wrap(err, "tag image")
+	if err = conf.Client.Images().Tag(ctx, imageID, tags...); err != nil {
+		return fmt.Errorf("tag image: %w", err)
 	}
 
 	// Push image
-	if !buildCtx.Options.DryRun {
+	if !conf.Options.DryRun {
 		logger.Infof("Pushing image %s", image)
-		err = buildCtx.Client.Image.Push(ctx, tags...)
+		err = conf.Client.Images().Push(ctx, tags...)
 		if err != nil {
-			return errors.Wrap(err, "push image")
+			return fmt.Errorf("push image: %w", err)
 		}
 	}
 
 	// Remove image to save space
-	err = buildCtx.Client.Image.Remove(ctx, imageID)
+	err = conf.Client.Images().Remove(ctx, imageID)
 	if err != nil {
-		return errors.Wrap(err, "remove image")
+		return fmt.Errorf("remove image: %w", err)
 	}
 
 	// Draw checkmark with fixed distance to the left
@@ -287,7 +287,7 @@ func realMain(ctx context.Context, opts *options) error {
 	logger.Debug("Creating docker client")
 	client, err := docker.New(ctx)
 	if err != nil {
-		return errors.Wrap(err, "create docker client")
+		return fmt.Errorf("create docker client: %w", err)
 	}
 	defer func() { _ = client.Close(ctx) }()
 
@@ -295,16 +295,18 @@ func realMain(ctx context.Context, opts *options) error {
 	if !opts.DryRun {
 		logger.Info("Logging in to docker")
 		if err = client.LoginFromEnv(ctx); err != nil {
-			return errors.Wrap(err, "login to dockerhub")
+			return fmt.Errorf("login to docker: %w", err)
 		}
 		defer func() { _ = client.Logout(ctx) }()
+	} else {
+		logger.Info("Dry run enabled; skipping authentication")
 	}
 
 	// Load remoteTags
 	logger.Info("Loading remote tags")
-	versions, err := docker.GetDockerHubRepoTags(ctx, defaultSourceRepo)
+	versions, err := docker.GetDockerHubRepoTags(ctx, defaultSourceRepo, nil)
 	if err != nil {
-		return errors.Wrap(err, "load remote tags")
+		return fmt.Errorf("load remote tags: %w", err)
 	}
 
 	// Build directory tree and generate Dockerfile from template for each version
@@ -315,7 +317,7 @@ func realMain(ctx context.Context, opts *options) error {
 	logger.Debugf("Requested versions: %v", requestedVersions)
 
 	// Create build context
-	buildCtx := &buildContext{
+	conf := &buildConfig{
 		Client:  client,
 		Options: opts,
 	}
@@ -339,13 +341,13 @@ func realMain(ctx context.Context, opts *options) error {
 			}
 
 			// Update the build context
-			buildCtx.Version = version
-			buildCtx.IsLatest = idx == len(versions)-1
+			conf.Version = version
+			conf.IsLastImage = idx == len(versions)-1
 
 			// Create build directory
 			buildDirectory := getTagBuildDir(opts.BuildDir, version.Original())
-			if err = createVersionDirectory(buildDirectory, buildCtx.Version, buildCtx.Options); err != nil {
-				return errors.Wrap(err, "create build directory")
+			if err = createVersionDirectory(buildDirectory, conf.Version, conf.Options); err != nil {
+				return fmt.Errorf("create version directory: %w", err)
 			}
 
 			// If the user does not want to keep the build directories, add them to the cleanup list
@@ -354,7 +356,7 @@ func realMain(ctx context.Context, opts *options) error {
 			}
 
 			// Build image
-			if err = buildImage(ctx, buildCtx); err != nil {
+			if err = buildImage(ctx, conf); err != nil {
 				logger.Errorf("Failed to build image for version %s: %s", version.Original(), err)
 			}
 		}
