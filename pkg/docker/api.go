@@ -5,10 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
-	"sort"
-
-	"github.com/Masterminds/semver"
 )
 
 type registryTagsResponse struct {
@@ -19,23 +15,11 @@ type registryTagsResponse struct {
 }
 
 var (
-	patternImageTag        = regexp.MustCompile(`^\d+\.\d+$`)
 	patternRegistryTagsURL = "https://registry.hub.docker.com/v2/repositories/library/%s/tags?page=1&page_size=%d"
-
-	registryAPIPageLimit = 100
+	registryAPIPageLimit   = 100
 )
 
-type SkipTagFunc func(tag string) bool
-
-var stdSkipTagFunc = func(tag string) bool {
-	return !patternImageTag.MatchString(tag)
-}
-
-func getTags(ctx context.Context, url string, skipTagFn SkipTagFunc) ([]*semver.Version, string, error) {
-	if skipTagFn == nil {
-		skipTagFn = stdSkipTagFunc
-	}
-
+func getTags(ctx context.Context, url string) ([]string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)
@@ -52,39 +36,28 @@ func getTags(ctx context.Context, url string, skipTagFn SkipTagFunc) ([]*semver.
 		return nil, "", fmt.Errorf("decode response: %w", err)
 	}
 
-	tags := make([]*semver.Version, 0, len(registryResponse.Results))
+	tags := make([]string, 0, len(registryResponse.Results))
 	for _, result := range registryResponse.Results {
-		if skipTagFn(result.Name) {
-			continue
-		}
-
-		tag, err := semver.NewVersion(result.Name)
-		if err != nil {
-			return nil, "", err
-		}
-
-		tags = append(tags, tag)
+		tags = append(tags, result.Name)
 	}
 
 	return tags, registryResponse.Next, nil
 }
 
-func getAllTags(ctx context.Context, repo string, skipTagFn SkipTagFunc) ([]*semver.Version, error) {
-	var tags []*semver.Version
+func getAllTags(ctx context.Context, repo string) ([]string, error) {
+	var tags []string
 
 	next := fmt.Sprintf(patternRegistryTagsURL, repo, registryAPIPageLimit)
 	for next != "" {
 		var err error
-		var newTags []*semver.Version
-		newTags, next, err = getTags(ctx, next, skipTagFn)
+		var newTags []string
+		newTags, next, err = getTags(ctx, next)
 		if err != nil {
 			return nil, fmt.Errorf("get tags: %w", err)
 		}
 
 		tags = append(tags, newTags...)
 	}
-
-	sort.Sort(semver.Collection(tags))
 
 	return tags, nil
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Masterminds/semver"
 	"github.com/docker/docker/api/types/registry"
 	docker "github.com/docker/docker/client"
 	"github.com/nikoksr/simplog"
@@ -33,8 +32,7 @@ type (
 
 	// ImageClient is a client for docker images. It is used to build, tag, push and remove docker images.
 	ImageClient interface {
-		Build(ctx context.Context, dockerfile, tag string) (string, error)
-		Tag(ctx context.Context, source string, targets ...string) error
+		Build(ctx context.Context, dockerfile string, tags ...string) (string, string, error)
 		Push(ctx context.Context, images ...string) error
 		Remove(ctx context.Context, ids ...string) error
 	}
@@ -90,19 +88,20 @@ func (c *Client) Images() ImageClient {
 
 // GetDockerHubRepoTags returns all tags for the given docker hub repository. The resulting list gets sorted in
 // ascending order. Currently, the default behavior is to only return tags that match the pattern \d+\.\d+.
-func GetDockerHubRepoTags(ctx context.Context, repo string, skipTagFn SkipTagFunc) ([]*semver.Version, error) {
-	return getAllTags(ctx, repo, skipTagFn)
-}
-
-// FullTag returns the full tag for the given image and tag.
-func FullTag(image string, tag any) string {
-	return fmt.Sprintf("%s:%v", image, tag)
+func GetDockerHubRepoTags(ctx context.Context, repo string) ([]string, error) {
+	return getAllTags(ctx, repo)
 }
 
 // Login logs in to the docker registry using the given auth config. It uses the docker CLI to login.
 func (c *Client) Login(ctx context.Context, auth registry.AuthConfig) error {
 	logger := simplog.FromContext(ctx)
-	logger.Debug("login to docker registry")
+
+	logger.Debug("Verifying docker login")
+	if auth.Username == "" || auth.Password == "" {
+		return fmt.Errorf("docker login failed: username or password is empty")
+	}
+
+	logger.Debugf("Logging in to docker registry as %s", auth.Username)
 
 	// Registry Login
 	authResponse, err := c.dockerClient.RegistryLogin(ctx, auth)

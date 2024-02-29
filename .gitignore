@@ -4,6 +4,7 @@ build/
 .idea/
 .vscode/
 tmp/
+.cache/
 
 # Files
 *.log
