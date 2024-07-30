@@ -14,12 +14,11 @@ import (
 	"text/template"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/Masterminds/semver/v3"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nikoksr/simplog"
 	"github.com/spf13/pflag"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nikoksr/mimikry/pkg/docker"
 )

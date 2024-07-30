@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/nikoksr/simplog"
 	"github.com/rs/xid"
@@ -24,19 +25,19 @@ type ErrorLine struct {
 	ErrorDetail ErrorDetail `json:"errorDetail"`
 }
 
-func (c *imageClient) getImageIDAndBaseID(ctx context.Context, image string) (string, string, error) {
+func (c *imageClient) getImageIDAndBaseID(ctx context.Context, imageRef string) (string, string, error) {
 	client := c.provider.GetDockerClient()
 
 	// Get image id
-	imageList, err := client.ImageList(ctx, types.ImageListOptions{
-		Filters: filters.NewArgs(filters.Arg("reference", image)),
+	imageList, err := client.ImageList(ctx, image.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("reference", imageRef)),
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("list images: %w", err)
 	}
 
 	if len(imageList) == 0 {
-		return "", "", fmt.Errorf("image %q not found", image)
+		return "", "", fmt.Errorf("image %q not found", imageRef)
 	}
 
 	// Trim the sha256: prefix from the image id
@@ -61,7 +62,7 @@ func (c *imageClient) getImageIDAndBaseID(ctx context.Context, image string) (st
 	}
 
 	if baseID == "" {
-		return "", "", fmt.Errorf("could not find base image id for %q", image)
+		return "", "", fmt.Errorf("could not find base image id for %q", imageRef)
 	}
 
 	return imageID, baseID, nil
@@ -148,14 +149,14 @@ func (c *imageClient) Push(ctx context.Context, images ...string) error {
 	client := c.provider.GetDockerClient()
 	authToken := c.provider.GetAuthToken()
 
-	for _, image := range images {
+	for _, imageRef := range images {
 		err := func() error {
-			logger.Debugf("Pushing image %q", image)
+			logger.Debugf("Pushing image %q", imageRef)
 
-			options := types.ImagePushOptions{
+			options := image.PushOptions{
 				RegistryAuth: authToken,
 			}
-			response, err := client.ImagePush(ctx, image, options)
+			response, err := client.ImagePush(ctx, imageRef, options)
 			if err != nil {
 				return err
 			}
@@ -184,7 +185,7 @@ func (c *imageClient) Remove(ctx context.Context, ids ...string) error {
 	client := c.provider.GetDockerClient()
 
 	for _, id := range ids {
-		responses, err := client.ImageRemove(ctx, id, types.ImageRemoveOptions{
+		responses, err := client.ImageRemove(ctx, id, image.RemoveOptions{
 			Force:         true,
 			PruneChildren: true,
 		})
