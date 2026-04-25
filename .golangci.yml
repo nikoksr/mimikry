@@ -1,8 +1,6 @@
+version: "2"
+
 run:
-  timeout: '5m'
-  skip-dirs:
-    - 'assets'
-  allow-parallel-runners: true
   modules-download-mode: 'readonly'
 
 linters:
@@ -13,13 +11,10 @@ linters:
     - 'errcheck'
     - 'errorlint'
     - 'copyloopvar'
-    - 'gofumpt'
     - 'goheader'
-    - 'goimports'
     - 'gomodguard'
     - 'goprintffuncname'
     - 'gosec'
-    - 'gosimple'
     - 'govet'
     - 'ineffassign'
     - 'makezero'
@@ -31,11 +26,17 @@ linters:
     - 'revive'
     - 'sqlclosecheck'
     - 'staticcheck'
-    - 'stylecheck'
-    - 'typecheck'
     - 'unconvert'
     - 'unused'
     - 'whitespace'
+  exclusions:
+    paths:
+      - 'assets'
+
+formatters:
+  enable:
+    - 'gofumpt'
+    - 'goimports'
 
 issues:
   max-issues-per-linter: 0

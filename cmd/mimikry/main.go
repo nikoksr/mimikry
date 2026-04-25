@@ -280,10 +280,14 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 	// Build cache path from source repo name
 	cachePath := filepath.Join(".cache", "mimikry", opts.SourceRepo+".json")
 
-	// Parse the versions constraint
-	versionConstraint, err := semver.NewConstraint(opts.VersionConstraint)
-	if err != nil {
-		return fmt.Errorf("parse version constraint: %w", err)
+	// Parse the versions constraint; empty string means all versions match.
+	var versionConstraint *semver.Constraints
+	if opts.VersionConstraint != "" {
+		var err error
+		versionConstraint, err = semver.NewConstraint(opts.VersionConstraint)
+		if err != nil {
+			return fmt.Errorf("parse version constraint: %w", err)
+		}
 	}
 	logger.Debugf("Parsed version constraint: %s", versionConstraint)
 
@@ -351,7 +355,7 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 		}
 
 		// Check if the version matches the constraint
-		if !versionConstraint.Check(version) {
+		if versionConstraint != nil && !versionConstraint.Check(version) {
 			logger.Debugf("Skipping version %s; does not match constraint", tag)
 			continue
 		}
