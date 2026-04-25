@@ -12,7 +12,7 @@ linters:
     - 'dogsled'
     - 'errcheck'
     - 'errorlint'
-    - 'exportloopref'
+    - 'copyloopvar'
     - 'gofumpt'
     - 'goheader'
     - 'goimports'
@@ -34,7 +34,6 @@ linters:
     - 'stylecheck'
     - 'typecheck'
     - 'unconvert'
-    - 'unused'
     - 'unused'
     - 'whitespace'
 

@@ -8,10 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/pkg/archive"
+	"github.com/moby/go-archive"
+	docker "github.com/moby/moby/client"
 	"github.com/nikoksr/simplog"
 	"github.com/rs/xid"
 )
@@ -26,34 +24,34 @@ type ErrorLine struct {
 }
 
 func (c *imageClient) getImageIDAndBaseID(ctx context.Context, imageRef string) (string, string, error) {
-	client := c.provider.GetDockerClient()
+	dockerClient := c.client.dockerClient
 
 	// Get image id
-	imageList, err := client.ImageList(ctx, image.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("reference", imageRef)),
+	imageListResult, err := dockerClient.ImageList(ctx, docker.ImageListOptions{
+		Filters: make(docker.Filters).Add("reference", imageRef),
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("list images: %w", err)
 	}
 
-	if len(imageList) == 0 {
+	if len(imageListResult.Items) == 0 {
 		return "", "", fmt.Errorf("image %q not found", imageRef)
 	}
 
 	// Trim the sha256: prefix from the image id
-	imageID := strings.TrimPrefix(imageList[0].ID, "sha256:")
+	imageID := strings.TrimPrefix(imageListResult.Items[0].ID, "sha256:")
 
 	// Get base image id. The base image ID is the last entry in the image history that is not <missing>.
 
 	// Get image history
-	imageHistory, err := client.ImageHistory(ctx, imageID)
+	historyResult, err := dockerClient.ImageHistory(ctx, imageID)
 	if err != nil {
 		return "", "", fmt.Errorf("get image history: %w", err)
 	}
 
 	// Find the base image id
 	baseID := ""
-	for _, history := range imageHistory {
+	for _, history := range historyResult.Items {
 		if history.ID == "<missing>" {
 			continue
 		}
@@ -68,11 +66,11 @@ func (c *imageClient) getImageIDAndBaseID(ctx context.Context, imageRef string) 
 	return imageID, baseID, nil
 }
 
-// Build builds a docker image from a dockerfile. It returns the image ID and an error. It calls the docker cli command.
-// The build command is run with BuildKit enabled.
+// Build builds a docker image from the given build directory. It returns the image ID and the base (parent) image ID.
+// BuildKit is currently disabled due to compatibility issues.
 func (c *imageClient) Build(ctx context.Context, buildDir string, tags ...string) (string, string, error) {
 	logger := simplog.FromContext(ctx)
-	client := c.provider.GetDockerClient()
+	dockerClient := c.client.dockerClient
 
 	if len(tags) == 0 {
 		return "", "", errors.New("no tags provided")
@@ -87,32 +85,30 @@ func (c *imageClient) Build(ctx context.Context, buildDir string, tags ...string
 	}
 
 	// Build Configuration
-	buildOptions := types.ImageBuildOptions{
+	buildOptions := docker.ImageBuildOptions{
 		Dockerfile: "Dockerfile",
 		Tags:       tags,
 		BuildArgs:  map[string]*string{},
 		BuildID:    xid.New().String(),
 		Remove:     true,
 		// FIXME: Enabling BuildKit causes the build to fail
-		// Version: types.BuilderBuildKit,
+		// Version: docker.BuilderBuildKit,
 	}
 
 	// Build Image
 	logger.Debugf("Starting build for %v", tags)
 
-	buildResponse, err := client.ImageBuild(ctx, buildContext, buildOptions)
+	buildResponse, err := dockerClient.ImageBuild(ctx, buildContext, buildOptions)
 	if err != nil {
 		return "", "", fmt.Errorf("build image: %w", err)
 	}
 
 	// Parse the build output for errors
-	errLines := make([]string, 0)
+	var errLines []string
 	scanner := bufio.NewScanner(buildResponse.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if false {
-			logger.Debug(line)
-		}
+		logger.Debug(line)
 
 		// Parse each line and look for errors
 		errLine := &ErrorLine{}
@@ -124,9 +120,6 @@ func (c *imageClient) Build(ctx context.Context, buildDir string, tags ...string
 	// Close the build response body
 	_ = buildResponse.Body.Close()
 
-	prettyBuildResponse, _ := json.MarshalIndent(buildResponse, "", "  ")
-	logger.Debugf("Build response: %s", string(prettyBuildResponse))
-
 	// Check if any errors were captured during build
 	if len(errLines) > 0 {
 		return "", "", fmt.Errorf("build image: %w", errors.New(strings.Join(errLines, "; ")))
@@ -135,28 +128,28 @@ func (c *imageClient) Build(ctx context.Context, buildDir string, tags ...string
 	logger.Debugf("Build finished for %v", tags)
 
 	// Get image id
-	imageID, parentID, err := c.getImageIDAndBaseID(ctx, tags[0])
+	imageID, baseID, err := c.getImageIDAndBaseID(ctx, tags[0])
 	if err != nil {
 		return "", "", fmt.Errorf("get image id: %w", err)
 	}
 
-	return imageID, parentID, nil
+	return imageID, baseID, nil
 }
 
 // Push pushes a docker image to a registry. It calls the docker cli command.
 func (c *imageClient) Push(ctx context.Context, images ...string) error {
 	logger := simplog.FromContext(ctx)
-	client := c.provider.GetDockerClient()
-	authToken := c.provider.GetAuthToken()
+	dockerClient := c.client.dockerClient
+	authToken := c.client.authToken
 
 	for _, imageRef := range images {
 		err := func() error {
 			logger.Debugf("Pushing image %q", imageRef)
 
-			options := image.PushOptions{
+			options := docker.ImagePushOptions{
 				RegistryAuth: authToken,
 			}
-			response, err := client.ImagePush(ctx, imageRef, options)
+			response, err := dockerClient.ImagePush(ctx, imageRef, options)
 			if err != nil {
 				return err
 			}
@@ -166,6 +159,12 @@ func (c *imageClient) Push(ctx context.Context, images ...string) error {
 			for scanner.Scan() {
 				line := scanner.Text()
 				logger.Debug(line)
+
+				// Parse each line and look for errors
+				errLine := &ErrorLine{}
+				if err := json.Unmarshal([]byte(line), errLine); err == nil && errLine.Error != "" {
+					return fmt.Errorf("push image %q: %s", imageRef, errLine.ErrorDetail.Message)
+				}
 			}
 
 			return nil
@@ -182,10 +181,10 @@ func (c *imageClient) Push(ctx context.Context, images ...string) error {
 // the docker API.
 func (c *imageClient) Remove(ctx context.Context, ids ...string) error {
 	logger := simplog.FromContext(ctx)
-	client := c.provider.GetDockerClient()
+	dockerClient := c.client.dockerClient
 
 	for _, id := range ids {
-		responses, err := client.ImageRemove(ctx, id, image.RemoveOptions{
+		result, err := dockerClient.ImageRemove(ctx, id, docker.ImageRemoveOptions{
 			Force:         true,
 			PruneChildren: true,
 		})
@@ -193,7 +192,7 @@ func (c *imageClient) Remove(ctx context.Context, ids ...string) error {
 			return fmt.Errorf("remove image %q: %w", id, err)
 		}
 
-		for _, response := range responses {
+		for _, response := range result.Items {
 			logger.Debugf("Removed image %v", response)
 		}
 	}

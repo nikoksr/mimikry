@@ -1,0 +1,57 @@
+name: Build Edge Images
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version constraint"
+        default: ""
+        type: string
+      force:
+        description: "Force rebuild all"
+        default: false
+        type: boolean
+      source:
+        description: "Source Docker repo"
+        default: "postgres"
+        type: string
+      tools:
+        description: "Tools to include"
+        default: "vim"
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Build mimikry
+        run: go build -o mimikry ./cmd/mimikry/
+
+      - name: Docker login
+        run: docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+
+      - name: Run mimikry
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          ARGS="--latest"
+          ARGS="$ARGS --source ${{ inputs.source || 'postgres' }}"
+          ARGS="$ARGS --tools ${{ inputs.tools || 'vim' }}"
+          if [ -n "${{ inputs.version }}" ]; then
+            ARGS="$ARGS -v ${{ inputs.version }}"
+          fi
+          if [ "${{ inputs.force }}" == "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          ./mimikry $ARGS _examples/basic/ nikoksr/postgres-edge

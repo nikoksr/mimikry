@@ -18,8 +18,6 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nikoksr/simplog"
 	"github.com/spf13/pflag"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/nikoksr/mimikry/pkg/docker"
 )
 
@@ -35,12 +33,15 @@ type (
 		VersionConstraint string
 		TagLatest         bool
 		Maintainer        string
+		SourceRepo        string
+		Tools             string
 		TargetRepo        string
 		TemplatePath      string
 		BuildDir          string
 		DryRun            bool
 		Debug             bool
 		KeepBuildDirs     bool
+		Force             bool
 	}
 
 	imageTags struct {
@@ -51,23 +52,20 @@ type (
 )
 
 const (
-	defaultSourceRepo     = "postgres" // TODO: Needs to be extracted from Dockerfile template
-	defaultDockerTools    = "vim"
 	defaultMaintainer     = "Unknown"
 	defaultBuildDirectory = "./mimikry"
-	postgresCachePath     = "./.cache/mimikry/postgres.json"
 )
 
 var (
-	ErrNoTagCache      = errors.New("no tag cache found")
-	ErrInvalidTagCache = errors.New("invalid tag cache")
+	errNoTagCache      = errors.New("no tag cache found")
+	errInvalidTagCache = errors.New("invalid tag cache")
 
-	patternImageTag = regexp.MustCompile(`^\d+(\.\d+)?(\.\d+)?$`) // Ignore anything that is not a major.minor version
-
-	stdSkipTagFunc = func(tag string) bool {
-		return !patternImageTag.MatchString(tag)
-	}
+	patternImageTag = regexp.MustCompile(`^\d+(\.\d+)?$`) // Match major-only (e.g., 18) and major.minor (e.g., 18.3) versions
 )
+
+func shouldSkipTag(tag string) bool {
+	return !patternImageTag.MatchString(tag)
+}
 
 func loadTagCache(path string) (*imageTags, error) {
 	var cache imageTags
@@ -79,7 +77,7 @@ func loadTagCache(path string) (*imageTags, error) {
 			return nil, fmt.Errorf("open tag cache file: %w", err)
 		}
 
-		return nil, ErrNoTagCache
+		return nil, errNoTagCache
 	}
 	defer func() { _ = file.Close() }()
 
@@ -89,7 +87,7 @@ func loadTagCache(path string) (*imageTags, error) {
 	}
 
 	if info.Size() == 0 {
-		return nil, ErrNoTagCache
+		return nil, errNoTagCache
 	}
 
 	// Decode JSON
@@ -98,11 +96,7 @@ func loadTagCache(path string) (*imageTags, error) {
 	}
 
 	if cache.Image == "" || len(cache.Tags) == 0 {
-		return nil, ErrInvalidTagCache
-	}
-
-	if !info.ModTime().IsZero() && info.ModTime().After(cache.Modified) { // Probably redundant, but just to be sure
-		cache.Modified = info.ModTime()
+		return nil, errInvalidTagCache
 	}
 
 	return &cache, nil
@@ -136,7 +130,7 @@ func cleanPath(path string) string {
 func printHelp() {
 	_, _ = fmt.Fprint(os.Stderr, `Usage:
 
-  mimikry [OPTIONS] SOURCE-FILE TARGET-REPO
+  mimikry [OPTIONS] TEMPLATE-PATH TARGET-REPO
 
 Options:
 
@@ -160,20 +154,26 @@ Example:
   # Build versions that are greater than or equal to 12.0 and less than 13.0 for parent image of Dockerfile template and push them to the given docker repo and tag the latest image
   mimikry -v "^12" --latest my-templates/ johndoe/some-repo
 
+  # Force rebuild all versions, even if they already exist in the target repo
+  mimikry --force my-templates/ johndoe/some-repo
+
   # For more info about version constraints, read here: https://github.com/Masterminds/semver?tab=readme-ov-file#basic-comparisons
 `)
 }
 
 func optionsFromCLI() (*options, error) {
-	var ops options
+	var opts options
 
-	pflag.StringVarP(&ops.Maintainer, "maintainer", "m", defaultMaintainer, "The maintainer of the Dockerfile")
-	pflag.StringVarP(&ops.BuildDir, "build", "b", defaultBuildDirectory, "The path to the build directory")
-	pflag.StringVarP(&ops.VersionConstraint, "version", "v", "", "Semantic version constraint; e.g. \">= 12.3\". If not set, all versions are built. See -h for more information")
-	pflag.BoolVarP(&ops.TagLatest, "latest", "l", false, "Whether to tag the latest image as latest")
-	pflag.BoolVar(&ops.DryRun, "dry-run", false, "Enable dry run mode; build but don't push")
-	pflag.BoolVar(&ops.Debug, "debug", false, "Enable debug mode")
-	pflag.BoolVar(&ops.KeepBuildDirs, "keep", false, "Keep build directories after build")
+	pflag.StringVarP(&opts.Maintainer, "maintainer", "m", defaultMaintainer, "The maintainer of the Dockerfile")
+	pflag.StringVarP(&opts.BuildDir, "build", "b", defaultBuildDirectory, "The path to the build directory")
+	pflag.StringVarP(&opts.VersionConstraint, "version", "v", "", "Semantic version constraint; e.g. \">= 12.3\". If not set, all versions are built. See -h for more information")
+	pflag.StringVar(&opts.SourceRepo, "source", "postgres", "The source Docker Hub repository to fetch tags from")
+	pflag.StringVar(&opts.Tools, "tools", "vim", "Comma-separated list of tools to install in the image; empty string means no tools")
+	pflag.BoolVarP(&opts.TagLatest, "latest", "l", false, "Whether to tag the latest image as latest")
+	pflag.BoolVar(&opts.DryRun, "dry-run", false, "Enable dry run mode; build but don't push")
+	pflag.BoolVar(&opts.Debug, "debug", false, "Enable debug mode")
+	pflag.BoolVar(&opts.KeepBuildDirs, "keep", false, "Keep build directories after build")
+	pflag.BoolVar(&opts.Force, "force", false, "Force rebuild of all versions; ignore existing tags in target repo")
 
 	pflag.Usage = printHelp
 	pflag.Parse()
@@ -184,14 +184,14 @@ func optionsFromCLI() (*options, error) {
 	}
 
 	// Set values from CLI args
-	ops.TemplatePath = pflag.Arg(0)
-	ops.TargetRepo = pflag.Arg(1)
+	opts.TemplatePath = pflag.Arg(0)
+	opts.TargetRepo = pflag.Arg(1)
 
 	// Clean up some paths
-	ops.TemplatePath = cleanPath(ops.TemplatePath)
-	ops.BuildDir = cleanPath(ops.BuildDir)
+	opts.TemplatePath = cleanPath(opts.TemplatePath)
+	opts.BuildDir = cleanPath(opts.BuildDir)
 
-	return &ops, nil
+	return &opts, nil
 }
 
 func getTagBuildDir(baseDir, version string) string {
@@ -204,39 +204,31 @@ func prepareBuildDirectory(path string, version *semver.Version, templates *temp
 		return fmt.Errorf("create build directory: %w", err)
 	}
 
-	eg := &errgroup.Group{}
-
 	for _, rawTemplate := range templates.Templates() {
-		rawTemplate := rawTemplate
-		eg.Go(func() error {
-			// Open Dockerfile for version
-			outputPath := filepath.Join(path, rawTemplate.Name())
-			outputFile, err := os.Create(outputPath)
-			if err != nil {
-				return fmt.Errorf("create template %q: %w", rawTemplate.Name(), err)
-			}
-			defer outputFile.Close()
+		// Open output file for this template
+		outputPath := filepath.Join(path, rawTemplate.Name())
+		outputFile, err := os.Create(outputPath)
+		if err != nil {
+			return fmt.Errorf("create template %q: %w", rawTemplate.Name(), err)
+		}
 
-			// TODO: Remove specific use-case
-			installTools := !version.LessThan(semver.MustParse("10.0.0"))
+		// Execute template
+		data := templateData{
+			Version:      version.Original(),
+			Maintainer:   opts.Maintainer,
+			InstallTools: opts.Tools != "",
+			Tools:        opts.Tools,
+		}
 
-			// Execute template
-			data := templateData{
-				Version:      version.Original(),
-				Maintainer:   opts.Maintainer,
-				InstallTools: installTools,
-				Tools:        defaultDockerTools, // TODO: Make this configurable
-			}
+		if err = rawTemplate.Execute(outputFile, data); err != nil {
+			outputFile.Close()
+			return fmt.Errorf("execute template %q: %w", rawTemplate.Name(), err)
+		}
 
-			if err = rawTemplate.Execute(outputFile, data); err != nil {
-				return fmt.Errorf("execute template %q: %w", rawTemplate.Name(), err)
-			}
-
-			return nil
-		})
+		outputFile.Close()
 	}
 
-	return eg.Wait()
+	return nil
 }
 
 func cleanupBuildDirs(ctx context.Context, dirs []string) {
@@ -254,7 +246,7 @@ func cleanupBuildDirs(ctx context.Context, dirs []string) {
 
 func main() {
 	// Create signal cancel context
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	// Get options from CLI
@@ -285,6 +277,9 @@ func main() {
 func realMain(ctx context.Context, templates *template.Template, opts *options) error {
 	logger := simplog.FromContext(ctx)
 
+	// Build cache path from source repo name
+	cachePath := filepath.Join(".cache", "mimikry", opts.SourceRepo+".json")
+
 	// Parse the versions constraint
 	versionConstraint, err := semver.NewConstraint(opts.VersionConstraint)
 	if err != nil {
@@ -311,44 +306,41 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 		logger.Info("Dry run enabled; skipping authentication")
 	}
 
-	// Try to load tags from cache
+	// Load tags; prefer fresh from Docker Hub, fall back to cache
 	logger.Info("Loading image tags")
-	logger.Debug("Trying to load tag cache")
 
-	tags, err := loadTagCache(postgresCachePath)
+	var tags *imageTags
+
+	// Try remote first
+	tagList, err := docker.GetDockerHubRepoTags(ctx, opts.SourceRepo)
 	if err != nil {
-		logger.Debugf("Failed to load tag cache: %v", err)
-	}
+		logger.Warnf("Failed to fetch remote tags: %v", err)
+		logger.Info("Falling back to cached tags")
 
-	if tags != nil {
-		logger.Debug("Using tag cache")
-	} else {
-		logger.Debug("No tag cache found; loading remote tags")
-		tagList, err := docker.GetDockerHubRepoTags(ctx, defaultSourceRepo)
-		if err != nil {
-			return fmt.Errorf("load remote tags: %w", err)
+		cachedTags, cacheErr := loadTagCache(cachePath)
+		if cacheErr != nil {
+			return fmt.Errorf("fetch remote tags failed and no usable cache: %w", err)
 		}
-
-		// Create tag cache
+		tags = cachedTags
+	} else {
 		tags = &imageTags{
-			Image:    defaultSourceRepo,
+			Image:    opts.SourceRepo,
 			Modified: time.Now(),
 			Tags:     tagList,
 		}
 	}
 
-	numTags := len(tags.Tags)
-	logger.Debugf("Loaded %d tags", numTags)
+	totalRemoteTags := len(tags.Tags)
+	logger.Debugf("Loaded %d tags", totalRemoteTags)
 
-	// Pre-sort and -filter tags; this does worsen the performance technically, but it avoids a lot
-	// of issues down the line.
-	versions := make([]*semver.Version, 0, numTags)
+	// Filter and sort tags upfront to reduce iterations in the build loop and ensure predictable ordering.
+	versions := make([]*semver.Version, 0, totalRemoteTags)
 	for _, tag := range tags.Tags {
 		// Sanitize tag and skip if it's not a major.minor version
 		tag = strings.TrimSpace(tag)
-		if stdSkipTagFunc(tag) {
+		if shouldSkipTag(tag) {
 			// Not removing the tag from the list as it might be requested by the user later
-			logger.Debugf("Skipping version %s; not a major.minor version", tag)
+			logger.Debugf("Skipping tag %s; does not match version pattern", tag)
 			continue
 		}
 
@@ -370,8 +362,39 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 	}
 
 	sort.Sort(semver.Collection(versions))
-	numTags = len(versions)
-	logger.Debugf("%d tags after sorting and filtering", numTags)
+	logger.Debugf("%d tags after sorting and filtering", len(versions))
+
+	// Incremental build: skip versions already present in target repo
+	if !opts.Force {
+		targetTags, targetErr := docker.GetDockerHubRepoTags(ctx, opts.TargetRepo)
+		if targetErr != nil {
+			logger.Warnf("Failed to fetch target repo tags: %v", targetErr)
+			logger.Info("Building all versions; target repo may be empty or unreachable")
+		} else {
+			existingTags := make(map[string]struct{}, len(targetTags))
+			for _, t := range targetTags {
+				existingTags[t] = struct{}{}
+			}
+
+			before := len(versions)
+			filtered := versions[:0]
+			for _, v := range versions {
+				if _, exists := existingTags[v.Original()]; exists {
+					logger.Debugf("Skipping version %s; already exists in target repo", v.Original())
+					continue
+				}
+				filtered = append(filtered, v)
+			}
+			versions = filtered
+			logger.Infof("Skipping %d versions already present in target repo (%d remain)", before-len(versions), len(versions))
+		}
+	}
+
+	numVersions := len(versions)
+	if numVersions == 0 {
+		logger.Info("Nothing to build; all versions already exist in target repo")
+		return nil
+	}
 
 	// Build directory tree and generate Dockerfile from template for each version
 	logger.Info("Building and uploading images")
@@ -381,7 +404,7 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 	defer func() {
 		// Save tag cache; it's deferred as the main loop might alter the tags
 		logger.Debug("Saving tag cache")
-		if err = saveTagCache(postgresCachePath, tags); err != nil {
+		if err = saveTagCache(cachePath, tags); err != nil {
 			logger.Errorf("Failed to save tag cache: %v", err)
 		}
 
@@ -397,7 +420,7 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 			return ctx.Err()
 		}
 
-		logger.Debugf("Processing tag %d/%d: %s", idx+1, numTags, version)
+		logger.Debugf("Processing tag %d/%d: %s", idx+1, numVersions, version)
 
 		// Create build directory
 		buildDirectory := getTagBuildDir(opts.BuildDir, version.Original())
@@ -412,17 +435,15 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 
 		// If this is the last image, tag it as latest
 		imageTag := fmt.Sprintf("%s:%s", opts.TargetRepo, version.Original())
-		tags := []string{imageTag}
-		if opts.TagLatest && idx == numTags-1 {
-			tags = append(tags, fmt.Sprintf("%s:%s", opts.TargetRepo, "latest"))
+		buildTags := []string{imageTag}
+		if opts.TagLatest && idx == numVersions-1 {
+			buildTags = append(buildTags, fmt.Sprintf("%s:%s", opts.TargetRepo, "latest"))
 			logger.Infof("Tagging image %s as latest", imageTag)
 		}
 
 		// Build image
-		buildDirectory = filepath.Join(defaultBuildDirectory, version.Original())
-
 		logger.Infof("Building image %s", imageTag)
-		imageID, baseID, err := client.Images().Build(ctx, buildDirectory, tags...)
+		imageID, baseID, err := client.Images().Build(ctx, buildDirectory, buildTags...)
 		if err != nil {
 			return fmt.Errorf("build image: %w", err)
 		}
@@ -436,7 +457,7 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 		// Push image
 		if !opts.DryRun {
 			logger.Infof("Pushing image %s", imageTag)
-			err = client.Images().Push(ctx, tags...)
+			err = client.Images().Push(ctx, buildTags...)
 			if err != nil {
 				return fmt.Errorf("push image: %w", err)
 			}
@@ -468,6 +489,22 @@ func realMain(ctx context.Context, templates *template.Template, opts *options) 
 		previousBaseImage = baseID
 
 		logger.Infof("Done with image %s", version.Original())
+	}
+
+	// Clean up last iteration's images
+	finalCleanup := make([]string, 0, 2)
+	if previousImage != "" {
+		finalCleanup = append(finalCleanup, previousImage)
+	}
+	if previousBaseImage != "" {
+		finalCleanup = append(finalCleanup, previousBaseImage)
+	}
+	if len(finalCleanup) > 0 {
+		logger.Info("Removing final build artifacts")
+		if err = client.Images().Remove(ctx, finalCleanup...); err != nil {
+			logger.Errorf("Failed to remove final images: %v", err)
+			// Don't return error here; the main work is done
+		}
 	}
 
 	return nil
