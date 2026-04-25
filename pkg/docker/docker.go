@@ -36,7 +36,7 @@ type (
 )
 
 func newClient() (*Client, error) {
-	client, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation()) // nosec:SA1019 -- TODO: migrate to docker.New()
+	client, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, err
 	}

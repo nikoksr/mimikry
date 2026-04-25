@@ -29,6 +29,15 @@ linters:
     - 'unconvert'
     - 'unused'
     - 'whitespace'
+  settings:
+    gosec:
+      excludes:
+        - G304  # File path from variable — intentional for this CLI tool
+        - G117  # Password in struct — needed for Docker auth
+    staticcheck:
+      checks:
+        - all
+        - '-SA1019'  # Deprecated API — TODO: migrate to docker.New()
   exclusions:
     paths:
       - 'assets'

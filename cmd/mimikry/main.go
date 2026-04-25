@@ -72,7 +72,7 @@ func loadTagCache(path string) (*imageTags, error) {
 	var cache imageTags
 
 	// Open file
-	file, err := os.Open(path) // nosec:G304 -- path is constructed from known source repo name
+	file, err := os.Open(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("open tag cache file: %w", err)
@@ -110,7 +110,7 @@ func saveTagCache(path string, cache *imageTags) error {
 	}
 
 	// Open file
-	file, err := os.Create(path) // nosec:G304 -- path is constructed from known source repo name
+	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create tag cache file: %w", err)
 	}
@@ -208,7 +208,7 @@ func prepareBuildDirectory(path string, version *semver.Version, templates *temp
 	for _, rawTemplate := range templates.Templates() {
 		// Open output file for this template
 		outputPath := filepath.Join(path, rawTemplate.Name())
-		outputFile, err := os.Create(outputPath) // nosec:G304 -- path is constructed from version + template name
+		outputFile, err := os.Create(outputPath)
 		if err != nil {
 			return fmt.Errorf("create template %q: %w", rawTemplate.Name(), err)
 		}
@@ -222,7 +222,7 @@ func prepareBuildDirectory(path string, version *semver.Version, templates *temp
 		}
 
 		if err = rawTemplate.Execute(outputFile, data); err != nil {
-			outputFile.Close()
+			_ = outputFile.Close()
 			return fmt.Errorf("execute template %q: %w", rawTemplate.Name(), err)
 		}
 

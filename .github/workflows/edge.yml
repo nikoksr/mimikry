@@ -7,7 +7,7 @@ on:
     inputs:
       version:
         description: "Version constraint"
-        default: ""
+        default: ">= 12"
         type: string
       force:
         description: "Force rebuild all"
