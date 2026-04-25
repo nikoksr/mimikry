@@ -14,10 +14,12 @@ import (
 	"github.com/rs/xid"
 )
 
+// ErrorDetail holds detailed error information from Docker API responses.
 type ErrorDetail struct {
 	Message string `json:"message"`
 }
 
+// ErrorLine represents a single error line from Docker build/push output.
 type ErrorLine struct {
 	Error       string      `json:"error"`
 	ErrorDetail ErrorDetail `json:"errorDetail"`
@@ -153,7 +155,7 @@ func (c *imageClient) Push(ctx context.Context, images ...string) error {
 			if err != nil {
 				return err
 			}
-			defer response.Close()
+			defer func() { _ = response.Close() }()
 
 			scanner := bufio.NewScanner(response)
 			for scanner.Scan() {

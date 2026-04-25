@@ -1,3 +1,4 @@
+// Package main provides the mimikry CLI tool for building locale-modified Docker images.
 package main
 
 import (
@@ -16,9 +17,9 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/nikoksr/mimikry/pkg/docker"
 	"github.com/nikoksr/simplog"
 	"github.com/spf13/pflag"
-	"github.com/nikoksr/mimikry/pkg/docker"
 )
 
 type (
@@ -53,7 +54,7 @@ type (
 
 const (
 	defaultMaintainer     = "Unknown"
-	defaultBuildDirectory = "./mimikry"
+	defaultBuildDirectory = "./build"
 )
 
 var (
@@ -71,7 +72,7 @@ func loadTagCache(path string) (*imageTags, error) {
 	var cache imageTags
 
 	// Open file
-	file, err := os.Open(path)
+	file, err := os.Open(path) // nosec:G304 -- path is constructed from known source repo name
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("open tag cache file: %w", err)
@@ -109,7 +110,7 @@ func saveTagCache(path string, cache *imageTags) error {
 	}
 
 	// Open file
-	file, err := os.Create(path)
+	file, err := os.Create(path) // nosec:G304 -- path is constructed from known source repo name
 	if err != nil {
 		return fmt.Errorf("create tag cache file: %w", err)
 	}
@@ -207,7 +208,7 @@ func prepareBuildDirectory(path string, version *semver.Version, templates *temp
 	for _, rawTemplate := range templates.Templates() {
 		// Open output file for this template
 		outputPath := filepath.Join(path, rawTemplate.Name())
-		outputFile, err := os.Create(outputPath)
+		outputFile, err := os.Create(outputPath) // nosec:G304 -- path is constructed from version + template name
 		if err != nil {
 			return fmt.Errorf("create template %q: %w", rawTemplate.Name(), err)
 		}
@@ -225,7 +226,7 @@ func prepareBuildDirectory(path string, version *semver.Version, templates *temp
 			return fmt.Errorf("execute template %q: %w", rawTemplate.Name(), err)
 		}
 
-		outputFile.Close()
+		_ = outputFile.Close()
 	}
 
 	return nil

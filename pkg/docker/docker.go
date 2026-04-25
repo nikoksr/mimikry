@@ -12,9 +12,7 @@ import (
 	"github.com/nikoksr/simplog"
 )
 
-var (
-	_ ImageClient = (*imageClient)(nil)
-)
+var _ ImageClient = (*imageClient)(nil)
 
 type (
 	// Client is the main docker client. It is used to create other clients.
@@ -38,7 +36,7 @@ type (
 )
 
 func newClient() (*Client, error) {
-	client, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	client, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation()) // nosec:SA1019 -- TODO: migrate to docker.New()
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +66,7 @@ func New(ctx context.Context) (*Client, error) {
 	return client, nil
 }
 
+// Images returns a client for building, pushing, and removing Docker images.
 func (c *Client) Images() ImageClient {
 	return &imageClient{client: c}
 }

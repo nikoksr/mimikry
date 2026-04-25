@@ -1,3 +1,4 @@
+// Package docker provides a client for interacting with Docker and the Docker Hub registry API.
 package docker
 
 import (
@@ -36,7 +37,7 @@ func getTags(ctx context.Context, url string) ([]string, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
